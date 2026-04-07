@@ -301,7 +301,8 @@ for (const p of mapProps.values()) {
   processed.catFlags = {
     AllListings: (mlsStatus === 'active' || isContingent) && !isAuction && !isLease,
     Condos: subType === 'Condominium' && (mlsStatus === 'active' || isContingent),
-    Land: ['Land', 'Lots/Acreage', 'Vacant Land'].includes(subType) && (mlsStatus === 'active' || isContingent),
+    Land: (processed.propertyType === 'Residential Lots/Land' || processed.propertyType === 'Land Auction') && 
+          (mlsStatus === 'active' || isContingent) && !isAuction,
     ContingentListings: isContingent && !isAuction && !isLease,
     ReducedListings: (original > current && redPct < 0.90) && !isAuction && !isLease,
     NewListings: processed.contractStatusLabel.includes('just listed') && !isAuction && !isLease,

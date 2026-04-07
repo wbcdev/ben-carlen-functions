@@ -3,3 +3,4 @@ node_modules/
 .runtimeconfig.json
 lib/
 *.logben-carlen-listing-alerts-sender.json
+ben-carlen-listing-alerts-sender.json
