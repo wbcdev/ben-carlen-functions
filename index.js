@@ -1,6 +1,8 @@
 // deploy with this, in this (functions) directory
 // firebase deploy --only functions:syncMlsData
 const { onSchedule } = require("firebase-functions/v2/scheduler")
+const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+const twilio = require('twilio')
 const admin = require('firebase-admin');
 const moment = require('moment');
 const fetch = require('node-fetch');
@@ -10,7 +12,6 @@ const { google } = require('googleapis')
 if (!admin.apps.length) { admin.initializeApp(); }
 const db = admin.firestore();
 
-// --- YOUR EXACT REUSED LOGIC ---
 const computePropertyLabels = (property) => {
     if (!property) return null;
   
@@ -208,7 +209,7 @@ function getAuctionDateFromRemarks (remarks) {
     const auctionExclusion = " and (PropertySubType eq null or (PropertySubType ne 'Land Auction' and PropertySubType ne 'Residential Auction'))";
     const leaseExclusion = " and (PropertySubType eq null or (PropertySubType ne 'Commercial Rental/Property Management' and PropertySubType ne 'Residential Rental/Property Management'))";
   
-    // 2. GET ALL COUNTS (Your exact Promise.all block)
+    // 2. GET ALL COUNTS
     const [resActive, resNew, resOH, resCont, resContNew, resSold, resSoldNew, resLandAuction, resResiAuction, resCommLease, resResiLease, resReduced, resBackOnMarket] = await Promise.all([
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Active')${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Active') and OriginalEntryTimestamp ge ${dateToGoBackTo}${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
@@ -237,8 +238,6 @@ function getAuctionDateFromRemarks (remarks) {
       }
     };
 
-
-  
     // Add all category fetches to the queue
     addUrls(resActive['@odata.count'] + resCont['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=(contains(MlsStatus,'Active') or contains(NAV17_rets_status,'Active Under Contract'))${auctionExclusion}${leaseExclusion}`);
     addUrls(resSold['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(MlsStatus,'Sold') and CloseDate ge ${dateToGoBackToSold}`);
@@ -279,77 +278,75 @@ function getAuctionDateFromRemarks (remarks) {
     });
   
     // 5. FINAL BATCH SAVE TO FIRESTORE
+    let batch = db.batch();
+    let count = 0;
 
+    for (const p of mapProps.values()) {
+    const processed = computePropertyLabels(p);
+    
+    const mlsStatus = String(p.MlsStatus || "").toLowerCase();
+    const retsStatus = String(p.NAV17_rets_status || "").toLowerCase();
+    const subType = String(p.PropertySubType || "").trim();
+    const original = Number(p.OriginalListPrice || 0);
+    const current = Number(p.ListPrice || 0);
+    const redPct = original > 0 ? (original - current) / original : 0;
+    
+    const isAuction = subType === "Land Auction" || subType === "Residential Auction";
+    const isLease = subType === "Commercial Rental/Property Management" || subType === "Residential Rental/Property Management";
+    const isContingent = retsStatus.includes('active under contract');
 
-let batch = db.batch();
-let count = 0;
+    processed.catFlags = {
+        AllListings: (mlsStatus === 'active' || isContingent) && !isAuction && !isLease,
+        Condos: subType === 'Condominium' && (mlsStatus === 'active' || isContingent),
+        Land: (processed.propertyType === 'Residential Lots/Land' || processed.propertyType === 'Land Auction') && 
+            (mlsStatus === 'active' || isContingent) && !isAuction,
+        ContingentListings: isContingent && !isAuction && !isLease,
+        ReducedListings: (original > current && redPct < 0.90) && !isAuction && !isLease,
+        NewListings: processed.contractStatusLabel.includes('just listed') && !isAuction && !isLease,
+        OpenHouseListings: processed.contractStatusLabel.includes('open house') && !isAuction && !isLease,
+        BackOnMarketListings: (mlsStatus === 'active' && p.ContingentDate != null) && !isAuction && !isLease,
+        SoldListings: mlsStatus === 'sold',
+        LandAuction: subType === 'Land Auction',
+        ResidentialAuction: subType === 'Residential Auction',
+        CommercialLease: subType === 'Commercial Rental/Property Management',
+        ResidentialLease: subType === 'Residential Rental/Property Management'
+    };
 
-for (const p of mapProps.values()) {
-  const processed = computePropertyLabels(p);
-  
-  const mlsStatus = String(p.MlsStatus || "").toLowerCase();
-  const retsStatus = String(p.NAV17_rets_status || "").toLowerCase();
-  const subType = String(p.PropertySubType || "").trim();
-  const original = Number(p.OriginalListPrice || 0);
-  const current = Number(p.ListPrice || 0);
-  const redPct = original > 0 ? (original - current) / original : 0;
-  
-  const isAuction = subType === "Land Auction" || subType === "Residential Auction";
-  const isLease = subType === "Commercial Rental/Property Management" || subType === "Residential Rental/Property Management";
-  const isContingent = retsStatus.includes('active under contract');
+    // --- THE CRITICAL SORT FIX --- 
+    // We save the raw Navica ISO string (2025-03-28T...) into these fields.
+    // DO NOT use M-D-YYYY here or sorting will fail forever.
+    processed.price = current; 
+    processed.originalListPrice = original;
+    processed.reductionPercentage = redPct;
+    processed.priceReductionAmount = original > current ? (original - current) : 0;
+    processed.originalEntryTimestamp = p.OriginalEntryTimestamp || "";
+    processed.closeDate = p.CloseDate || "";
+    processed.priceChangeTimestamp = p.PriceChangeTimestamp || "";
+    processed.modificationTimestamp = p.ModificationTimestamp || "";
+    // Set the generic date field to raw ISO as well for a fallback
+    processed.date = p.OriginalEntryTimestamp || p.ListingContractDate || "";
 
-  processed.catFlags = {
-    AllListings: (mlsStatus === 'active' || isContingent) && !isAuction && !isLease,
-    Condos: subType === 'Condominium' && (mlsStatus === 'active' || isContingent),
-    Land: (processed.propertyType === 'Residential Lots/Land' || processed.propertyType === 'Land Auction') && 
-          (mlsStatus === 'active' || isContingent) && !isAuction,
-    ContingentListings: isContingent && !isAuction && !isLease,
-    ReducedListings: (original > current && redPct < 0.90) && !isAuction && !isLease,
-    NewListings: processed.contractStatusLabel.includes('just listed') && !isAuction && !isLease,
-    OpenHouseListings: processed.contractStatusLabel.includes('open house') && !isAuction && !isLease,
-    BackOnMarketListings: (mlsStatus === 'active' && p.ContingentDate != null) && !isAuction && !isLease,
-    SoldListings: mlsStatus === 'sold',
-    LandAuction: subType === 'Land Auction',
-    ResidentialAuction: subType === 'Residential Auction',
-    CommercialLease: subType === 'Commercial Rental/Property Management',
-    ResidentialLease: subType === 'Residential Rental/Property Management'
-  };
-
-  // --- THE CRITICAL SORT FIX --- 
-  // We save the raw Navica ISO string (2025-03-28T...) into these fields.
-  // DO NOT use M-D-YYYY here or sorting will fail forever.
-  processed.price = current; 
-  processed.originalListPrice = original;
-  processed.reductionPercentage = redPct;
-  processed.priceReductionAmount = original > current ? (original - current) : 0;
-  processed.originalEntryTimestamp = p.OriginalEntryTimestamp || "";
-  processed.closeDate = p.CloseDate || "";
-  processed.priceChangeTimestamp = p.PriceChangeTimestamp || "";
-  processed.modificationTimestamp = p.ModificationTimestamp || "";
-  // Set the generic date field to raw ISO as well for a fallback
-  processed.date = p.OriginalEntryTimestamp || p.ListingContractDate || "";
-
-  const docRef = db.collection('listings').doc(String(p.ListingId));
-  batch.set(docRef, processed, { merge: true });
-  
-  count++;
-  if (count % 500 === 0) {
+    const docRef = db.collection('listings').doc(String(p.ListingId));
+    batch.set(docRef, processed, { merge: true });
+    
+    count++;
+    if (count % 500 === 0) {
+        await batch.commit();
+        batch = db.batch();
+    }
+    }
     await batch.commit();
-    batch = db.batch();
-  }
-}
-await batch.commit();
-    return null;
-});
+        return null;
+    });
 
-// To deploy this function use in this directory (functions)
-// firebase deploy --only functions:sendAutomatedEmailAlerts
-exports.sendAutomatedEmailAlerts = onSchedule({
-    schedule: "every 60 minutes",
-    timeoutSeconds: 540,
-    memory: "1GiB",
-    secrets: ["GMAIL_PRIVATE_KEY"]
-}, async (event) => {
+    // To deploy this function use in this directory (functions)
+    // firebase deploy --only functions:sendAutomatedEmailAlerts
+    exports.sendAutomatedEmailAlerts = onSchedule({
+        schedule: "every 60 minutes",
+        timeoutSeconds: 540,
+        memory: "1GiB",
+        secrets: ["GMAIL_PRIVATE_KEY"]
+    }, async (event) => {
     try {
         const privateKey = process.env.GMAIL_PRIVATE_KEY.replace(/\\n/g, '\n');
         // // 1. SETUP GMAIL AUTH
@@ -438,4 +435,76 @@ exports.sendAutomatedEmailAlerts = onSchedule({
     } catch (error) {
         console.error("Failed to send alerts:", error);
     }
-});
+    })
+
+    exports.handleValuationLead = onDocumentCreated({
+        document: "valuation_leads/{leadId}",
+        secrets: ["GMAIL_PRIVATE_KEY"]
+    }, async (event) => {
+        const snapshot = event.data;
+        if (!snapshot) return null;
+    
+        const data = snapshot.data();
+        const address = data.address;
+        const userEmail = data.email;
+    
+        try {
+            const privateKey = process.env.GMAIL_PRIVATE_KEY.replace(/\\n/g, '\n');
+            
+            // 1. SETUP GMAIL AUTH (Reusing service account config)
+            const auth = new google.auth.JWT({
+                email: 'listing-alerts-sender@ben-carlen.iam.gserviceaccount.com',
+                key: privateKey,
+                scopes: ['https://www.googleapis.com/auth/gmail.send'],
+                subject: 'Ben@BenCarlen.com'
+            });
+            await auth.authorize();
+            const gmail = google.gmail({ version: 'v1', auth });
+    
+            // HELPER: To encode messages for Gmail API
+            const encodeMessage = (from, to, subject, body) => {
+                const raw = [
+                    `From: ${from}`,
+                    `To: ${to}`,
+                    `Subject: ${subject}`,
+                    'MIME-Version: 1.0',
+                    'Content-Type: text/html; charset=utf-8',
+                    '',
+                    body
+                ].join('\n');
+                return Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+            };
+    
+            // 2. EMAIL TO BEN
+            const benMail = encodeMessage(
+                '"Ben Carlen Web" <Ben@BenCarlen.com>',
+                'Ben@BenCarlen.com',
+                `🏠 NEW Valuation Request: ${address}`,
+                `<h2>New Valuation Lead</h2>
+                 <p>A user requested a valuation for: <b>${address}</b></p>
+                 <p>Contact Email: ${userEmail}</p>`
+            );
+    
+            // 3. EMAIL TO HOMEOWNER
+            const homeownerMail = encodeMessage(
+                '"Ben Carlen" <Ben@BenCarlen.com>',
+                userEmail,
+                'Your Home Valuation Report is in Progress!',
+                `<h2>Hi there!</h2>
+                 <p>I've received your request for a valuation of <b>${address}</b>.</p>
+                 <p>I'm currently running the numbers against the latest sales in your area. 
+                 I'll reach out shortly with a detailed professional analysis.</p>
+                 <p>Best regards,<br/><b>Ben Carlen</b></p>`
+            );
+    
+            // 4. SEND BOTH
+            await Promise.all([
+                gmail.users.messages.send({ userId: 'me', requestBody: { raw: benMail } }),
+                gmail.users.messages.send({ userId: 'me', requestBody: { raw: homeownerMail } })
+            ]);
+    
+            console.log(`Valuation alerts sent successfully for: ${address}`);
+        } catch (error) {
+            console.error("Valuation function failed:", error);
+        }
+    });
