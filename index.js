@@ -206,24 +206,29 @@ function getAuctionDateFromRemarks (remarks) {
     let dateToGoBackToSoldNew = moment().subtract(daysToGoBackSoldNew, "days").format("YYYY-MM-DD");
     let presentDate = moment().format("YYYY-MM-DD");
   
-    const auctionExclusion = " and (PropertySubType eq null or (PropertySubType ne 'Land Auction' and PropertySubType ne 'Residential Auction'))";
-    const leaseExclusion = " and (PropertySubType eq null or (PropertySubType ne 'Commercial Rental/Property Management' and PropertySubType ne 'Residential Rental/Property Management'))";
+    const soldExclusion =  " and (CloseDate eq null or CloseDate gt 2050-01-01)";
+
+    const auctionExclusion = " and PropertySubType ne 'Land Auction' and PropertySubType ne 'Residential Auction'";
+const leaseExclusion = " and PropertySubType ne 'Commercial Rental/Property Management' and PropertySubType ne 'Residential Rental/Property Management'"
+// Combined Filter
+const filter = `MlsStatus eq 'Active' and ListPrice lt OriginalListPrice and CloseDate eq null${auctionExclusion}${leaseExclusion}`
   
     // 2. GET ALL COUNTS
-    const [resActive, resNew, resOH, resCont, resContNew, resSold, resSoldNew, resLandAuction, resResiAuction, resCommLease, resResiLease, resReduced, resBackOnMarket] = await Promise.all([
+    const [resActive, resNew, resOH, resCont, resContNew, resSold, resSoldNew, resLandAuction, resResiAuction, resCommLease, resResiLease, resReduced, resBackOnMarket, resCommercial] = await Promise.all([
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Active')${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Active') and OriginalEntryTimestamp ge ${dateToGoBackTo}${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
-      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/OpenHouse?access_token=${token}&$count=true&$top=1&$filter=date(OpenHouseDate) ge ${presentDate}`).then(res => res.json()),
-      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(NAV17_rets_status,'Active Under Contract')${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
-      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(NAV17_rets_status,'Active Under Contract') and OriginalEntryTimestamp ge ${dateToGoBackTo}${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
+      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/OpenHouse?access_token=${token}&$count=true&$top=1&$filter=date(OpenHouseDate) ge ${presentDate} and CloseDate eq null`).then(res => res.json()),
+      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(NAV17_rets_status,'Active Under Contract')${auctionExclusion}${leaseExclusion}${soldExclusion}`).then(res => res.json()),
+      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(NAV17_rets_status,'Active Under Contract') and OriginalEntryTimestamp ge ${dateToGoBackTo}${auctionExclusion}${leaseExclusion} and CloseDate eq null`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Sold') and CloseDate ge ${dateToGoBackToSold}`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Sold') and OriginalEntryTimestamp ge ${dateToGoBackToSoldNew}${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(PropertySubType,'Land Auction') and CloseDate eq null`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(PropertySubType,'Residential Auction') and CloseDate eq null`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(PropertySubType,'Commercial Rental/Property Management') and CloseDate eq null`).then(res => res.json()),
       fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(PropertySubType,'Residential Rental/Property Management') and CloseDate eq null`).then(res => res.json()),
-      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Active') and ListPrice lt OriginalListPrice${auctionExclusion}`).then(res => res.json()),
-      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=MlsStatus eq 'Active' and ContingentDate ne null${auctionExclusion}${leaseExclusion}`).then(res => res.json()),
+      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=${encodeURIComponent(filter)}`).then(res => res.json()),
+      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=MlsStatus eq 'Active' and ContingentDate ne null${auctionExclusion}${leaseExclusion} and CloseDate eq null`).then(res => res.json()),
+      fetch(`https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$count=true&$top=1&$filter=contains(MlsStatus,'Active') and PropertyType eq 'Commercial Sale' and CloseDate eq null`).then(res => res.json()),
     ]);
   
     // 3. CONSTRUCT URLS FOR EVERY CATEGORY (Looping by 200)
@@ -239,9 +244,9 @@ function getAuctionDateFromRemarks (remarks) {
     };
 
     // Add all category fetches to the queue
-    addUrls(resActive['@odata.count'] + resCont['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=(contains(MlsStatus,'Active') or contains(NAV17_rets_status,'Active Under Contract'))${auctionExclusion}${leaseExclusion}`);
+    addUrls(resActive['@odata.count'] + resCont['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=(contains(MlsStatus,'Active') or contains(NAV17_rets_status,'Active Under Contract' and CloseDate eq null))${auctionExclusion}${leaseExclusion}`);
     addUrls(resSold['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(MlsStatus,'Sold') and CloseDate ge ${dateToGoBackToSold}`);
-    addUrls(resReduced['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(MlsStatus,'Active') and ListPrice lt OriginalListPrice${auctionExclusion}`);
+    addUrls(resReduced['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=${encodeURIComponent(filter)}`);
     
     // Auctions
     addUrls(resLandAuction['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(PropertySubType,'Land Auction') and CloseDate eq null`);
@@ -251,9 +256,12 @@ function getAuctionDateFromRemarks (remarks) {
     addUrls(resCommLease['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(PropertySubType,'Commercial Rental/Property Management') and CloseDate eq null`);
     addUrls(resResiLease['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(PropertySubType,'Residential Rental/Property Management') and CloseDate eq null`);
 
+    // Commercial
+    addUrls(resCommercial['@odata.count'], `https://navapi.navicamls.net/api/v2/OData/nav17/Property?access_token=${token}&$filter=contains(MlsStatus,'Active') and PropertyType eq 'Commercial Sale' and CloseDate eq null`)
+
     // Add Open House URLs separately
     for (let i = 0; i < Math.ceil(resOH['@odata.count'] / 200); i++) {
-      ohUrls.push(`https://navapi.navicamls.net/api/v2/OData/nav17/OpenHouse?access_token=${token}&$skip=${200 * i}&$top=200&$orderby=OpenHouseDate desc&$filter=date(OpenHouseDate) ge ${presentDate}`);
+      ohUrls.push(`https://navapi.navicamls.net/api/v2/OData/nav17/OpenHouse?access_token=${token}&$skip=${200 * i}&$top=200&$orderby=OpenHouseDate desc&$filter=date(OpenHouseDate) ge ${presentDate} and CloseDate eq null`);
     }
   
     // 4. FETCH, CLEAN, AND MERGE
@@ -270,7 +278,10 @@ function getAuctionDateFromRemarks (remarks) {
     ]);
   
     const mapProps = new Map();
-    propResponses.flatMap(r => r.value).forEach(item => mapProps.set(item.ListingId, item));
+    propResponses.flatMap(r => r.value).forEach(item => {
+      if (!item || !item.ListingId) return;
+      mapProps.set(item.ListingId, item)
+    });
     ohResponses.flatMap(r => r.value).forEach(item => {
       if (mapProps.has(item.ListingId)) {
         mapProps.set(item.ListingId, { ...mapProps.get(item.ListingId), ...item });
@@ -293,6 +304,7 @@ function getAuctionDateFromRemarks (remarks) {
     
     const isAuction = subType === "Land Auction" || subType === "Residential Auction";
     const isLease = subType === "Commercial Rental/Property Management" || subType === "Residential Rental/Property Management";
+    const isSold = mlsStatus == 'sold'
     const isContingent = retsStatus.includes('active under contract');
 
     processed.catFlags = {
@@ -301,11 +313,12 @@ function getAuctionDateFromRemarks (remarks) {
         Land: (processed.propertyType === 'Residential Lots/Land' || processed.propertyType === 'Land Auction') && 
             (mlsStatus === 'active' || isContingent) && !isAuction,
         ContingentListings: isContingent && !isAuction && !isLease,
-        ReducedListings: (original > current && redPct < 0.90) && !isAuction && !isLease,
+        ReducedListings: (original > current && redPct < 0.90) && !isAuction && !isLease && !isSold,
         NewListings: processed.contractStatusLabel.includes('just listed') && !isAuction && !isLease,
         OpenHouseListings: processed.contractStatusLabel.includes('open house') && !isAuction && !isLease,
         BackOnMarketListings: (mlsStatus === 'active' && p.ContingentDate != null) && !isAuction && !isLease,
         SoldListings: mlsStatus === 'sold',
+        Commercial: (processed.propertyType === 'Commercial') && (mlsStatus === 'active' || isContingent),
         LandAuction: subType === 'Land Auction',
         ResidentialAuction: subType === 'Residential Auction',
         CommercialLease: subType === 'Commercial Rental/Property Management',
